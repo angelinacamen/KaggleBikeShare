@@ -28,3 +28,4 @@ tempseason_boxplot <- ggplot(bike, aes(x = factor(season), y = temp, fill=factor
 
 tempseason_boxplot + season_bp
 (tempseason_boxplot + season_bp)/(weather_bp + humidity_plot)
+
