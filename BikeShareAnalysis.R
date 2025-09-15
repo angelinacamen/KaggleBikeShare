@@ -3,17 +3,16 @@ library(tidymodels)
 bikeTrain <- vroom("~/Downloads/KaggleBikeShare/bike-sharing-demand/train.csv") 
 bikeTest <- vroom("~/Downloads/KaggleBikeShare/bike-sharing-demand/test.csv") #drop casual and registered variables
 
+#Data Cleaning
 bikeTrain <- bikeTrain %>% select(-c(casual, registered)) %>% mutate(count = log(count))
 
- #changing weather "4" to "3"
 
-#defining a recipe
+#Feature Engineering using a recipe
 my_recipe <- recipe(count ~., data = bikeTrain) %>%
   step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
   step_time(datetime, features=c("hour")) %>%
   step_mutate(season=factor(season)) %>%
   step_zv(all_predictors())
-
 prepped_recipe <- prep(my_recipe) 
 bake(prepped_recipe, new_data=bikeTest)
 
@@ -24,6 +23,7 @@ bike_recipe <- recipe(count ~., data = bikeTrain) %>%
   step_mutate(season=factor(season)) %>%
   step_zv(all_predictors())
 
+#Linear Regression Workflow
 ## Define a Model
 lin_model <- linear_reg() %>%
 set_engine("lm") %>%
@@ -38,14 +38,16 @@ fit(data=bikeTrain)
 ## Run all the steps on test data
 lin_preds <- predict(bike_workflow, new_data = bikeTest)
 
+##Back transforming log(count) prediction
 lin_preds <- lin_preds %>%
   mutate(.pred = exp(.pred))
 
+##Printing first five rows of baked dataset
 prepped_recipe <- prep(bike_recipe)
 baked_train <- bake(prepped_recipe, new_data = bikeTest)
-
 head(baked_train, 5)
 
+##Prepare file for Kaggle Submission
 kaggle_submission_wf <- lin_preds %>%
   bind_cols(., bikeTest) %>% #Bind predictions with test data
   select(datetime, .pred) %>% #Just keep datetime and prediction variables
@@ -55,6 +57,8 @@ kaggle_submission_wf <- lin_preds %>%
 
 ## Write out the file
 vroom_write(x=kaggle_submission_wf, file="./BakedData.csv", delim=",")
+
+
 
 
 linear_model <- linear_reg() %>% 
