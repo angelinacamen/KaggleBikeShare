@@ -228,6 +228,72 @@ kaggle_submission <- final_preds %>%
 vroom_write(x=kaggle_submission, file="./RegressionTree.csv", delim=",")
 
 
+##Random Forests
+install.packages("ranger")
+library(ranger)
+install.packages("rpart")
+library(tidymodels)
+## maxnumx is how many columns are in the baked data set
+my_mod <- rand_forest(mtry = tune(),
+                      min_n=tune(),
+                      trees=1000) %>% #Type of model
+  set_engine("ranger") %>% # What R function to use
+  set_mode("regression")
+
+## Create a workflow with model & recipe
+randfor_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(my_mod)
+
+## Grid of values to tune over
+grid_of_tuning_params <- grid_regular(mtry(range=c(1, ncol(baked_train))),
+                                      min_n(), 
+                                      levels = 5) 
+
+## Split data for CV
+folds <- vfold_cv(bikeTrain, v = 6, repeats = 1)
+
+# Run the CV
+CV_results <- randfor_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = grid_of_tuning_params,
+    metrics = metric_set(rmse, mae)
+  )
+
+# Plot results (use tree_depth or min_n instead of penalty/mixture)
+collect_metrics(CV_results) %>%
+  filter(.metric == "rmse") %>%
+  ggplot(aes(x = tree_depth, y = mean, color = factor(min_n))) +
+  geom_line()
+
+## Find Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Finalize the workflow & fit it
+final_wf <- randfor_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = bikeTrain)
+
+
+## Predict
+final_preds <- final_wf %>%
+  predict(new_data = bikeTest)
+finals_preds <- final_preds %>%
+  mutate(.pred = exp(.pred))
+
+##Prepare for Kaggle Submission
+kaggle_submission <- final_preds %>%
+  bind_cols(., bikeTest) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./RandomForrests.csv", delim=",")
+
 
 ##Linear Predictions
 linear_model <- linear_reg() %>% 
