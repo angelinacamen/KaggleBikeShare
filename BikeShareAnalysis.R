@@ -20,6 +20,7 @@ my_recipe <- recipe(count ~., data = bikeTrain) %>%
   step_time(datetime, features=c("hour")) %>%
   step_mutate(season=factor(season)) %>%
   step_zv(all_predictors())
+
 prepped_recipe <- prep(my_recipe) 
 bake(prepped_recipe, new_data=bikeTest)
 
@@ -83,7 +84,8 @@ my_recipe <- recipe(count ~., data=bikeTrain) %>%
   step_normalize(all_numeric_predictors()) #Make mean 0, sd=1
 
 prepped_recipe <- prep(my_recipe)
-
+baked_train <- bake(prepped_recipe, new_data = bikeTest)
+head(baked_train, 5)
 
 preg_wf <- workflow() %>%
   add_recipe(my_recipe) %>%
@@ -293,6 +295,108 @@ kaggle_submission <- final_preds %>%
 
 ## Write out the file
 vroom_write(x=kaggle_submission, file="./RandomForrests.csv", delim=",")
+
+
+##BART AND BOOSTING
+library(bonsai)
+library(lightgbm)
+
+bart_model <- bart(trees=tune()) %>% # BART figures out depth and learn_rate
+  set_engine("dbarts") %>% # might need to install
+  set_mode("regression")
+
+## Create a workflow with model & recipe
+bartmod_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(bart_model)
+
+## Grid of values to tune over
+grid_of_tuning_params <- grid_regular(trees(), 
+                                      levels = 10) 
+
+## Split data for CV
+folds <- vfold_cv(bikeTrain, v = 6, repeats = 1)
+
+# Run the CV
+CV_results <- bartmod_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = grid_of_tuning_params,
+    metrics = metric_set(rmse, mae)
+  )
+
+# Plot results (use tree_depth or min_n instead of penalty/mixture)
+collect_metrics(CV_results) %>%
+  filter(.metric == "rmse") %>%
+  ggplot(aes(x = trees(), y = mean, color = factor(min_n))) +
+  geom_line()
+
+## Find Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Finalize the workflow & fit it
+final_wf <- bartmod_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = bikeTrain)
+
+
+## Predict
+final_preds <- final_wf %>%
+  predict(new_data = bikeTest)
+finals_preds <- final_preds %>%
+  mutate(.pred = exp(.pred))
+
+##Prepare for Kaggle Submission
+kaggle_submission <- final_preds %>%
+  bind_cols(., bikeTest) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./BartModel1.csv", delim=",")
+
+
+##STACKING MODELS
+## Libraries
+library(agua) #Install if necessary
+
+## Initialize an h2o session
+h2o::h2o.init()
+
+## Define the model
+## max_runtime_secs = how long to let h2o.ai run
+## max_models = how many models to stack
+auto_model <- auto_ml() %>%
+set_engine("h2o", max_runtime_secs=90, max_models=5) %>%
+set_mode("regression")
+
+## Combine into Workflow
+automl_wf <- workflow() %>%
+add_recipe(my_recipe) %>%
+add_model(auto_model) %>%
+fit(data=bikeTrain)
+
+## Predict
+final_preds <- automl_wf %>%
+  predict(new_data = bikeTest)
+finals_preds <- final_preds %>%
+  mutate(.pred = exp(.pred))
+
+##Prepare for Kaggle Submission
+kaggle_submission <- final_preds %>%
+  bind_cols(., bikeTest) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./ModelStacking.csv", delim=",")
+
+
 
 
 ##Linear Predictions
