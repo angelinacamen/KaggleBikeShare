@@ -8,7 +8,7 @@ library(vroom)
 
 
 bikeTrain <- vroom("~/Downloads/KaggleBikeShare/bike-sharing-demand/train.csv") 
-bikeTest <- vroom("~/Downloads/KaggleBikeShare/bike-sharing-demand/test.csv") #drop casual and registered variables
+bikeTest <- vroom("~/Downloads/KaggleBikeShare/bike-sharing-demand/test.csv") 
 
 #Data Cleaning
 bikeTrain <- bikeTrain %>% select(-c(casual, registered)) %>% mutate(count = log(count))
@@ -76,16 +76,40 @@ preg_model <- linear_reg(penalty=penalty_value, mixture=mixture_value) %>% #Set 
 my_recipe <- recipe(count ~., data=bikeTrain) %>%
   step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
   step_mutate(weather = factor(weather)) %>%
-  step_time(datetime, features=c("hour")) %>%
-  step_dummy(all_nominal_predictors()) %>%
-  step_rm(datetime) %>%
+  # Extract time features
+  step_mutate(hour = hour(datetime),
+              wday = wday(datetime, label = TRUE),
+              month = month(datetime),
+              year = year(datetime)) %>%
+  # Encode cyclical features (hour, month) to capture cyclic trends
+  step_mutate(hour_sin = sin(2 * pi * hour / 24),
+              hour_cos = cos(2 * pi * hour / 24),
+              month_sin = sin(2 * pi * month / 12),
+              month_cos = cos(2 * pi * month / 12)) %>%
+  # Remove original datetime and raw cyclical features
+  step_rm(datetime, hour, month) %>%
+  # One-hot encode categorical predictors
+  step_dummy(all_nominal_predictors(), -all_outcomes()) %>%
+  # Remove near-zero variance and linear combination predictors
   step_zv(all_predictors()) %>%
   step_lincomb(all_predictors()) %>%
-  step_normalize(all_numeric_predictors()) #Make mean 0, sd=1
+  # Log-transform skewed numeric features (count is usually skewed)
+  step_log(count, offset = 1) %>%
+  # Normalize numeric features
+  step_normalize(all_numeric_predictors())
+
+prepped_recipe <- prep(my_recipe)
+baked_train <- bake(prepped_recipe, new_data = bikeTrain)
+head(baked_train, 5)
+
 
 prepped_recipe <- prep(my_recipe)
 baked_train <- bake(prepped_recipe, new_data = bikeTest)
 head(baked_train, 5)
+
+vroom_write(x=baked_train, file="./BakedTrain.csv", delim=",")
+vroom_write(x=baked_train, file="./BikeTest.csv", delim=",")
+
 
 preg_wf <- workflow() %>%
   add_recipe(my_recipe) %>%
@@ -93,9 +117,8 @@ preg_wf <- workflow() %>%
   fit(data=bikeTrain)
 
 
-preds <- predict(preg_wf, new_data=bikeTest)
-preds <- preds %>%
-  mutate(.pred = exp(.pred))
+preds <- predict(preg_wf, new_data=bikeTest) %>%
+  exp()
 
 kaggle_submission <- preds %>%
   bind_cols(., bikeTest) %>% #Bind predictions with test data
@@ -150,7 +173,9 @@ final_wf <- preg_wf %>%
 
 ## Predict
 final_preds <- final_wf %>%
-  predict(new_data = bikeTest)
+  predict(new_data = bikeTest) %>% 
+  exp()
+
 
 ##Prepare for Kaggle Submission
 kaggle_submission <- final_preds %>%
@@ -161,7 +186,7 @@ kaggle_submission <- final_preds %>%
   mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
 
 ## Write out the file
-vroom_write(x=kaggle_submission, file="./TuningandFitting1.csv", delim=",")
+vroom_write(x=kaggle_submission, file="./TuningandFittingExp.csv", delim=",")
 
 
 ##Regression Trees
@@ -281,9 +306,8 @@ final_wf <- randfor_wf %>%
 
 ## Predict
 final_preds <- final_wf %>%
-  predict(new_data = bikeTest)
-finals_preds <- final_preds %>%
-  mutate(.pred = exp(.pred))
+  predict(new_data = bikeTest) %>%
+  exp()
 
 ##Prepare for Kaggle Submission
 kaggle_submission <- final_preds %>%
@@ -294,12 +318,13 @@ kaggle_submission <- final_preds %>%
   mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
 
 ## Write out the file
-vroom_write(x=kaggle_submission, file="./RandomForrests.csv", delim=",")
+vroom_write(x=kaggle_submission, file="./RandomForrests2.csv", delim=",")
 
 
 ##BART AND BOOSTING
 library(bonsai)
 library(lightgbm)
+library(lubridate)
 
 bart_model <- bart(trees=tune()) %>% # BART figures out depth and learn_rate
   set_engine("dbarts") %>% # might need to install
@@ -343,12 +368,11 @@ final_wf <- bartmod_wf %>%
 
 ## Predict
 final_preds <- final_wf %>%
-  predict(new_data = bikeTest)
-finals_preds <- final_preds %>%
-  mutate(.pred = exp(.pred))
+  predict(new_data = bikeTest) %>%
+  exp()
 
 ##Prepare for Kaggle Submission
-kaggle_submission <- final_preds %>%
+kaggle_submission <- finals_preds %>%
   bind_cols(., bikeTest) %>% #Bind predictions with test data
   select(datetime, .pred) %>% #Just keep datetime and prediction variables
   rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
@@ -356,7 +380,7 @@ kaggle_submission <- final_preds %>%
   mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
 
 ## Write out the file
-vroom_write(x=kaggle_submission, file="./BartModel1.csv", delim=",")
+vroom_write(x=kaggle_submission, file="./BartModel3.csv", delim=",")
 
 
 ##STACKING MODELS
@@ -381,9 +405,8 @@ fit(data=bikeTrain)
 
 ## Predict
 final_preds <- automl_wf %>%
-  predict(new_data = bikeTest)
-finals_preds <- final_preds %>%
-  mutate(.pred = exp(.pred))
+  predict(new_data = bikeTest) %>%
+  exp()
 
 ##Prepare for Kaggle Submission
 kaggle_submission <- final_preds %>%
@@ -422,3 +445,65 @@ bind_cols(., bikeTest) %>% #Bind predictions with test data
 ## Write out the file
 vroom_write(x=kaggle_submission, file="./LinearPreds.csv", delim=",")
 
+
+##Final Kaggle Submission
+##Data 
+bikeTrain <- vroom("~/Downloads/KaggleBikeShare/bike-sharing-demand/train.csv") 
+bikeTest <- vroom("~/Downloads/KaggleBikeShare/bike-sharing-demand/test.csv") 
+
+#Data Cleaning
+bikeTrain <- bikeTrain %>% select(-c(casual, registered)) %>% 
+  mutate(count_log = log1p(count)) %>%
+  select(-count)
+
+##Recipe
+final_recipe <- recipe(count_log ~ ., data = bikeTrain) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather), 
+              weekend = ifelse(wday(datetime) %in% c(1,7), 1, 0),
+              rush_hour = ifelse(hour(datetime) %in% c(7:9, 16:19), 1, 0)) %>%
+  step_date(datetime, features = c("month", "year", "dow")) %>%
+  step_time(datetime, features = "hour") %>%
+  step_rm(datetime) %>%
+  step_interact(terms = ~ temp:humidity + temp:windspeed + season:humidity) %>%
+  step_poly(temp, humidity, degree = 2) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+  
+  
+## Libraries
+library(agua) #Install if necessary
+
+## Initialize an h2o session
+h2o::h2o.init()
+
+## Define the model
+## max_runtime_secs = how long to let h2o.ai run
+## max_models = how many models to stack
+auto_model <- auto_ml() %>%
+  set_engine("h2o", max_runtime_secs=180, max_models=6) %>%
+  set_mode("regression")
+
+## Combine into Workflow
+automl_wf <- workflow() %>%
+  add_recipe(final_recipe) %>%
+  add_model(auto_model) %>%
+  fit(data=bikeTrain)
+
+## Predict
+final_preds <- automl_wf %>%
+  predict(new_data = bikeTest) %>%
+  exp()
+
+##Prepare for Kaggle Submission
+kaggle_submission <- final_preds %>%
+  bind_cols(., bikeTest) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./ModelStacking1.csv", delim=",")
+
+
+all_num_vars()
